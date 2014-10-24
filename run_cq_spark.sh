@@ -1,5 +1,11 @@
 #!/bin/bash
 
+
+
+source ~/.bashrc
+
+sbt assembly
+
 /root/spark/bin/spark-submit \
     --class "CloudQuakeSparkConsumer" \
     --master local[4] \
