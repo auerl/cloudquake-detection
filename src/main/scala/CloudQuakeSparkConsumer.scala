@@ -17,24 +17,6 @@ import com.amazonaws.services.kinesis.model.PutRecordRequest
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
 
-
-
-
-// testing json4s parsing
-/* import util.parsing.json.JSON
-import java.io._
-import org.scalastuff.json.JsonParser	
-import org.scalastuff.json.JsonPrinter
-import org.apache.spark.sql._
-import org.json4s.jackson.JsonMethods
-import org.json4s.jackson.JsonMethods._
-import org.json4s.JsonAST._
-import org.json4s.DefaultFormats 
-*/
-
-
-import org.apache.spark.sql._
-
 object CloudQuakeSparkConsumer {
    def main(args: Array[String]) {
 
@@ -51,37 +33,10 @@ object CloudQuakeSparkConsumer {
      }
 
 
-
-
-
      // =========================================
-     // THIS IS SOME PRELIMINARY TESTING
-
-     // This shows how to read files and do something with them
-     val logFile = "file:///root/spark/README.md" // search in local path not hdfs
-     val conf = new SparkConf().setAppName("Simple Application")
-     val sc = new SparkContext(conf)
-     val logData = sc.textFile(logFile, 2).cache()
-     val numAs = logData.filter(line => line.contains("a")).count()
-     val numBs = logData.filter(line => line.contains("b")).count()
-     println("Lines with a: %s, Lines with b: %s".format(numAs, numBs))
-
-     // =========================================
-
-
-
-     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-
-
-
-     // =========================================
-     //     StreamingExamples.setStreamingLogLevels()
-
      /* Populate the appropriate variables from the given args */
      val Array(streamName, endpointUrl) = args
-     println("Argument 1: %s, Argument 2: %s".format(streamName, endpointUrl))
-
-
+     println("Stream to connect: %s, Amazon backend: %s".format(streamName, endpointUrl))
 
      /* Determine the number of shards from the stream */
      val kinesisClient = new AmazonKinesisClient(new DefaultAWSCredentialsProviderChain().getCredentials())
@@ -98,6 +53,8 @@ object CloudQuakeSparkConsumer {
      val sparkConfig = new SparkConf().setAppName("KinesisWordCount")
      val ssc = new StreamingContext(sparkConfig, batchInterval)
 
+     /* Set checkpoint directory */
+     ssc.checkpoint("/root/check/")
 
      /* Kinesis checkpoint interval.  Same as batchInterval for this example. */
      val kinesisCheckpointInterval = batchInterval
@@ -109,23 +66,43 @@ object CloudQuakeSparkConsumer {
      }
 
 
+     /* list of words to search for */
+     val keyWords = List("this")
+//     val keyWords = List("earthquake", "Earthquake", "Erdbeben", "Quake", "shaking")
+
+
      /* Union all the streams */
      val unionStreams = ssc.union(kinesisStreams)
 
      // val windowed_unionStreams = unionStreams.window(new Duration(60000), new Duration(5000))
 
-
-
-
-
-
      // This just outputs everything contained in the tweet
-     val words = unionStreams.flatMap(byteArray => new String(byteArray).split(" "))
+   val words = unionStreams.flatMap(byteArray => new String(byteArray).split(" "))
+   val lines = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))     
      // words.print()
 
      // This
      val hashTags = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.startsWith("#")))
      // hashTags.print()
+
+
+     /* Here I could insert looking for words like EQ,earthquake,... etc */
+//     val containsEbola = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
+//     val containsthis = unionStreams.flatMap(byteArray => new String(byteArray).split("\n").filter(_.exists(keyWords contains _)))
+
+     val containsthis = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.exists(s => s == "this")))
+
+
+     
+
+
+     val alltweets = unionStreams.flatMap(byteArray => new String(byteArray).split("\n")).countByWindow(Seconds(2),Seconds(2))
+
+     containsthis.print()
+//     containsthis.countByWindow(Seconds(60),Seconds(2)).print()
+     alltweets.print()
+
+//     print(countEbola)
      
      // Most popular hashtags in the last 60 seconds
      val topCounts60 = hashTags.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
@@ -138,12 +115,49 @@ object CloudQuakeSparkConsumer {
               	      .transform(_.sortByKey(false))
 
 
+     // Most popular words in the last 60 seconds
+     val topWordCounts60 = words.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
+     	              .map{case (topic, count) => (count, topic)}
+              	      .transform(_.sortByKey(false))
+
+
+     // Most popular words in the last 60 seconds
+//     val topEbolaCounts60 = containsEbola.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
+//     	              .map{case (topic, count) => (count, topic)}
+
+
+
+
+
+
+
+     /*
+
       // Print popular hashtags
       topCounts60.foreachRDD(rdd => {
       val topList = rdd.take(10)
       println("\nPopular topics in last 60 seconds (%s total):".format(rdd.count()))
       topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
       })
+
+
+      // Print tweets with ebola
+      topEbolaCounts60.foreachRDD(rdd => {
+      val topList = rdd.take(10)
+      println("\nPopular topics in last 60 seconds (%s total):".format(rdd.count()))
+      topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
+      })
+     
+
+
+
+      // Print popular hashtags
+      topWordCounts60.foreachRDD(rdd => {
+      val topList = rdd.take(10)
+      println("\nPopular topics in last 60 seconds (%s total):".format(rdd.count()))
+      topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
+      })
+
 
       topCounts10.foreachRDD(rdd => {
       val topList = rdd.take(10)
@@ -152,37 +166,7 @@ object CloudQuakeSparkConsumer {
       })
 
 
-     // val wordCounts = words.map(word => (word, 1)).reduceByKey(_ + _)
-     // wordCounts.print()
-
-
-     // unionStreams.foreachRDD( rdd => { for(item <- rdd.collect().toArray) { println(item); } })
-     // val anotherTweet = sqlContext.jsonRDD(unionStreams.foreachRDD( rdd => for(item <- rdd.collect().toArray) ))
-     // val anotherTweet = sqlContext.jsonRDD(words.foreachRDD( rdd:RDD[String] => { for(item <- rdd.collect().toArray) { println(item); } }))
-     // val anotherTweet = sqlContext.jsonRDD(unionStreams.foreachRDD((x:RDD[byteArray]) => flatMap(byteArray => new String(byteArray))))
-
-/*
-     unionStreams.foreachRDD(rdd => {
-       if (rdd.count > 0) {		  
-       //           val json_rdd = sqlContext.jsonRDD(rdd)
-       //	       json_rdd.registerAsTable("data_table")
-       //	       json_rdd.printSchema
-       //           val json = JsonMethods.parse(rdd)
-
-        // rdd.collect().foreach(println)
-
-
-
-	 }
-      })
-
-*/
-
-
-//   val parser = new JsonParser(new MyJsonHandler)	
-//   val result: JsValue = SprayJsonParser.parse(unionStreams)
-//   val json = JsonMethods.parse(unionStreams)
-
+      */
 
 
      /* Now our processing logic starts, for now I just count popular hashtags 
@@ -190,10 +174,6 @@ object CloudQuakeSparkConsumer {
         analysing the json format. How can I open such a format.
      */
      
-
-//   val kinesisClient = new AmazonKinesisClient()
-//   val kinesisClient = new AmazonKinesisClient(new DefaultAWSCredentialsProviderChain().getCredentials())
-
 
     /* Start the streaming context and await termination */
     ssc.start()
