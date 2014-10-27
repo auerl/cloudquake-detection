@@ -128,7 +128,7 @@ object CloudQuakeSparkConsumer {
      	              .map{case (topic, count) => (count, topic)}
               	      .transform(_.sortByKey(false))
 
-      val windowed_dstream = lines.window(Seconds(60),batchInterval)
+
 
 
       // Print popular hashtags
@@ -151,6 +151,8 @@ object CloudQuakeSparkConsumer {
       topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
       })
       */
+
+      val shortterm_window = lines.window(Seconds(60),batchInterval)
 
       /* Now our processing logic starts */
       windowed_dstream.foreachRDD(rdd => {
