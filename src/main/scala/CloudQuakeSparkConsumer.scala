@@ -4,6 +4,7 @@ import scala.util.Random
 import org.apache.spark.Logging
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
+import org.apache.spark.sql.SQLContext
 import org.apache.spark.SparkConf
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.{Milliseconds,Seconds}
@@ -24,7 +25,7 @@ object CloudQuakeSparkConsumer {
      if (args.length < 2) {
         System.err.println(
 	   """
-	      |Usage: KinesisWordCount <stream-name> <endpoint-url>
+	      |Usage: CloudQuakeSparkConsumer <stream-name> <endpoint-url>
 	      | <stream-name> is the name of the Kinesis stream
 	      | <endpoint-url> is the endpoint of the Kinesis service
 	      | (e.g. https://kinesis.us-east-1.amazonaws.com)
@@ -52,6 +53,10 @@ object CloudQuakeSparkConsumer {
      val batchInterval = Milliseconds(2000)
      val sparkConfig = new SparkConf().setAppName("KinesisWordCount")
      val ssc = new StreamingContext(sparkConfig, batchInterval)
+     val sc = new SparkContext(sparkConfig)
+
+     val sqlContext = new org.apache.spark.sql.SQLContext(sc)	
+
 
      /* Set checkpoint directory */
      ssc.checkpoint("/root/check/")
@@ -65,44 +70,30 @@ object CloudQuakeSparkConsumer {
          InitialPositionInStream.LATEST, StorageLevel.MEMORY_AND_DISK_2)
      }
 
-
-     /* list of words to search for */
-     val keyWords = List("this")
-//     val keyWords = List("earthquake", "Earthquake", "Erdbeben", "Quake", "shaking")
-
-
      /* Union all the streams */
      val unionStreams = ssc.union(kinesisStreams)
 
-     // val windowed_unionStreams = unionStreams.window(new Duration(60000), new Duration(5000))
+     val words = unionStreams.flatMap(byteArray => new String(byteArray).split(" "))
+     val lines = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))     
 
-     // This just outputs everything contained in the tweet
-   val words = unionStreams.flatMap(byteArray => new String(byteArray).split(" "))
-   val lines = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))     
-     // words.print()
-
-     // This
+     /* This selects all hashtags */
      val hashTags = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.startsWith("#")))
-     // hashTags.print()
 
 
-     /* Here I could insert looking for words like EQ,earthquake,... etc */
-//     val containsEbola = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
-//     val containsthis = unionStreams.flatMap(byteArray => new String(byteArray).split("\n").filter(_.exists(keyWords contains _)))
+     /*
 
-     val containsthis = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.exists(s => s == "this")))
+     /* list of words to search for */
+
+     */
+     val keyWords = List("this")
+     val containsthis1 = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_=="this"))
+     val containsthis2 = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.exists(keyWords contains _)))
+     val countalltweets = unionStreams.flatMap(byteArray => new String(byteArray).split("\n")).countByWindow(Seconds(60),Seconds(2))
+//     containsthis1.countByWindow(Seconds(60),Seconds(2)).print()
+//     containsthis2.countByWindow(Seconds(60),Seconds(2)).print()
+     countalltweets.print()
 
 
-     
-
-
-     val alltweets = unionStreams.flatMap(byteArray => new String(byteArray).split("\n")).countByWindow(Seconds(2),Seconds(2))
-
-     containsthis.print()
-//     containsthis.countByWindow(Seconds(60),Seconds(2)).print()
-     alltweets.print()
-
-//     print(countEbola)
      
      // Most popular hashtags in the last 60 seconds
      val topCounts60 = hashTags.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
@@ -114,22 +105,35 @@ object CloudQuakeSparkConsumer {
      	              .map{case (topic, count) => (count, topic)}
               	      .transform(_.sortByKey(false))
 
-
      // Most popular words in the last 60 seconds
      val topWordCounts60 = words.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
      	              .map{case (topic, count) => (count, topic)}
               	      .transform(_.sortByKey(false))
 
 
-     // Most popular words in the last 60 seconds
+// Most popular words in the last 60 seconds
 //     val topEbolaCounts60 = containsEbola.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
 //     	              .map{case (topic, count) => (count, topic)}
 
 
+      val windowed_dstream = lines.window(Seconds(60),Seconds(2))
 
+      windowed_dstream.foreachRDD(rdd => {
+           if (rdd.count > 0) {
+               val json_rdd = sqlContext.jsonRDD(rdd)
+               json_rdd.registerAsTable("data_table")
+               json_rdd.printSchema()
 
+               // rules
+	       // val query1_results = sqlContext.sql("SELECT * FROM data_table WHERE content LIKE '%this%' ")
+ 	       // val query1_results = sqlContext.sql("SELECT * FROM data_table")
+	       val query1_results = sqlContext.sql("SELECT COUNT(*) FROM data_table").collect().head.getLong(0)
+	       // val contains_this = query1_results.collect.map(row => row.getString(5)) //get time
+	       // println("Stocks above market value: \n ======================= \n" + contains_this.mkString(",")) 
+               println(s"Number of tweets per minute: $query1_results") 
 
-
+              }
+           })
 
      /*
 
@@ -148,8 +152,6 @@ object CloudQuakeSparkConsumer {
       topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
       })
      
-
-
 
       // Print popular hashtags
       topWordCounts60.foreachRDD(rdd => {
