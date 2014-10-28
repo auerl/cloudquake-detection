@@ -67,7 +67,12 @@ object CloudQuakeSparkConsumer {
 
      /* Setup the and SparkConfig and StreamingContext */
      /* Spark Streaming batch interval */
-     val batchInterval = Milliseconds(10000) // 10 seconds batchInterval
+
+     val m=4.0
+     val b=10.0
+
+     val batchInterval = Seconds(60)// 1 Minute batchInterval
+
      val sparkConfig = new SparkConf().setAppName("CloudQuakeSparkConsumer")
                                       .set("spark.cleaner.ttl","7200") // clean every 2 hours 
      val ssc = new StreamingContext(sparkConfig, batchInterval)
@@ -153,28 +158,39 @@ object CloudQuakeSparkConsumer {
       */
 
       val shortterm_window = lines.window(Seconds(60),batchInterval)
+      val longterm_window = lines.window(Seconds(3600),batchInterval)       
 
-      /* Now our processing logic starts */
-      windowed_dstream.foreachRDD(rdd => {
-           if (rdd.count > 0) {
-               val json_rdd = sqlContext.jsonRDD(rdd)
-               json_rdd.registerAsTable("twitter_json")
-	       json_rdd.printSchema()
+      /* Now our processing logic starts */	
+
+      longterm_window.foreachRDD(rdd_lta => {
+           if (rdd_lta.count > 0) {
+               val json_rdd_lta = sqlContext.jsonRDD(rdd_lta)
+               json_rdd_lta.registerAsTable("twitter_json_lta")
+	       json_rdd_lta.printSchema()
 
                // Some sample requests on the data
-	       // val query1_results = sqlContext.sql("SELECT * FROM twitter_json WHERE content LIKE '%this%' ")
- 	       // val query1_results = sqlContext.sql("SELECT * FROM twitter_json")
-	       val query1_results = sqlContext.sql("SELECT COUNT(*) FROM twitter_json").collect().head.getLong(0)
+	       val res_lta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_lta").collect().head.getLong(0)
 
-	       // val contains_this = query1_results.collect.map(row => row.getString(5)) //get time
-	       // println("Stocks above market value: \n ======================= \n" + contains_this.mkString(",")) 
-               println(s"Number of tweets per minute: $query1_results") 
+	       shortterm_window.foreachRDD(rdd_sta => {
+                    if (rdd_sta.count > 0) {
+		        val json_rdd_sta = sqlContext.jsonRDD(rdd_sta)
+			json_rdd_sta.registerAsTable("twitter_json_sta")
 
-              }
-           })
-       
+ 	                val res_sta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_sta").collect().head.getLong(0)
+			val C_value = res_sta/(m*res_lta+b)
+
+			println(s"C value: $C_value")
+			println(s"Number of tweets per minute: $res_sta")
+			println(s"Number of tweets per hour: $res_lta")	
+
+			/* @ TODO: ... as soon as C_value > 1 we trigger ... */
+
+                    }
+                 })
+               }
+            })
+
      
-
       /* Start the streaming context and await termination */
       ssc.start()
       ssc.awaitTermination()
