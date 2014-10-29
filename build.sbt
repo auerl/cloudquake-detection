@@ -12,7 +12,9 @@ jarName in assembly := "cloudquake-spark-consumer_2.10-1.0.jar"
 
 assemblyOption in assembly ~= { _.copy(includeScala = false) }
 
+
 libraryDependencies ++= Seq(
+  "org.apache.spark" %% "spark-sql" % "1.1.0" % "provided",
   "org.apache.spark" %% "spark-core" % "1.1.0" % "provided",
   "org.apache.spark" % "spark-streaming_2.10" % "1.1.0" % "provided",
   ("org.apache.spark" % "spark-streaming-kinesis-asl_2.10" % "1.1.0").
