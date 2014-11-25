@@ -11,7 +11,8 @@
      tweets. See Earle et al. (2011) for details.
    * Requires environment variables AWS_ACCESS_KEY_ID 
      and AWS_SECRET_KEY to be set.
- 
+   * Partly based on the Spark Word Count example
+
      Authors: Ludwig Auer, Shoma Arita, Lin Shen Husan
   
 */
@@ -24,6 +25,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.{Milliseconds,Seconds}
 import org.apache.spark.streaming.StreamingContext
@@ -35,6 +37,7 @@ import com.amazonaws.services.kinesis.clientlibrary.lib.worker.InitialPositionIn
 import com.amazonaws.services.kinesis.model.PutRecordRequest
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
+import java.lang.Math
 
 object CloudQuakeSparkConsumer {
    def main(args: Array[String]) {
@@ -57,22 +60,27 @@ object CloudQuakeSparkConsumer {
      println("Stream to connect: %s, Amazon backend: %s".format(streamName, endpointUrl))
 
      /* Determine the number of shards from the stream */
-     val kinesisClient = new AmazonKinesisClient(new DefaultAWSCredentialsProviderChain().getCredentials())
+     val kinesisClient = new AmazonKinesisClient(new DefaultAWSCredentialsProviderChain()
+                         .getCredentials())
      kinesisClient.setEndpoint(endpointUrl)
-     val numShards = kinesisClient.describeStream(streamName).getStreamDescription().getShards()
-      .size()
+     val numShards = kinesisClient.describeStream(streamName)
+                     .getStreamDescription().getShards().size()
 
      /* For now use 1 Kinesis Worker/Receiver/DStream for each shard. */
      val numStreams = numShards
 
-     /* Setup the and SparkConfig and StreamingContext */
      /* Spark Streaming batch interval */
+     val batchInterval = Seconds(10) // A 10 Seconds batch interval is good for testing     
 
-     val m=4.0
-     val b=10.0
 
-     val batchInterval = Seconds(60)// 1 Minute batchInterval
+     val sta_win = 60 // In seconds
+     val lta_win = 180 // In seconds, 180 for testing
+     val m = 4.0     
+     val b = 10.0
 
+
+
+     /* Setup the and SparkConfig and StreamingContext */
      val sparkConfig = new SparkConf().setAppName("CloudQuakeSparkConsumer")
                                       .set("spark.cleaner.ttl","7200") // clean every 2 hours 
      val ssc = new StreamingContext(sparkConfig, batchInterval)
@@ -80,7 +88,6 @@ object CloudQuakeSparkConsumer {
 
      /* Start up a new Spark SQL context */
      val sqlContext = new org.apache.spark.sql.SQLContext(sc)	
-
 
      /* Set checkpoint directory */
      ssc.checkpoint("/root/check/")
@@ -96,106 +103,69 @@ object CloudQuakeSparkConsumer {
 
      /* Union all the streams */
      val unionStreams = ssc.union(kinesisStreams)
+     val tweets = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))     
 
-     val words = unionStreams.flatMap(byteArray => new String(byteArray).split(" "))
-     val lines = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))     
-
-     /* This selects all hashtags */
-     val hashTags = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.startsWith("#")))
-
-
-     /* list of words to search for */
-//     val keyWords = List("this")
-//     val containsthis1 = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_=="this"))
-//     val containsthis2 = unionStreams.flatMap(byteArray => new String(byteArray).split(" ").filter(_.exists(keyWords contains _)))
-
-//     containsthis1.countByWindow(Seconds(60),batchInterval).print()
-//     containsthis2.countByWindow(Seconds(60),batchInterval).print()
-
-     val countalltweets = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
-                                        .countByWindow(Seconds(60),batchInterval)
-     countalltweets.print()
+     /* Some helper functions */
+     def square(x:Double): Double = x*x 
+     def longToDouble(x:Long): Double = x.toDouble
+     def doubleToString(x:Double): String = x.toString
+     def modify_sta(x:Double): Double = m*x + b
 
 
-     
-     // Most popular hashtags in the last 60 seconds
-     val topHashCounts60 = hashTags.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
-     	              .map{case (topic, count) => (count, topic)}
-              	      .transform(_.sortByKey(false))
+     /* Compute long term average in a window of 1h*/
+     val lta_num = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
+                                        .countByWindow(Seconds(lta_win),batchInterval)
+					.map(longToDouble)
 
-     // Most popular hashtags in the last 10 seconds
-     val topHashCounts10 = hashTags.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(10))
-     	              .map{case (topic, count) => (count, topic)}
-              	      .transform(_.sortByKey(false))
+     /* Compute short term average, including m and b values (see ... et al. 2011) */
+     val sta_num = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
+                                        .countByWindow(Seconds(sta_win),batchInterval)
+					.map(longToDouble).map(modify_sta)
 
-     // Most popular words in the last 60 seconds
-     val topWordCounts60 = words.map((_, 1)).reduceByKeyAndWindow(_ + _, Seconds(60))
-     	              .map{case (topic, count) => (count, topic)}
-              	      .transform(_.sortByKey(false))
+     /* Prelinary union lta and sta streams */
+     val sta_and_lta = sta_num.transformWith(lta_num, (rdd1: RDD[Double], 
+          	  rdd2: RDD[Double]) => rdd1.union(rdd2))
+
+     /* I need it in key-value pair format for joining with the actual tweets later */
+     val cvalue = sta_and_lta.reduce((res_sta, res_lta) => res_lta / res_sta )
+                   .map(doubleToString).map((1,_))  
+
+     /* Print current cvalue */
+     cvalue.map{case (x,y) => y}.print()     
+
+     /* for storage I want a shortterm window in key-value pair form */
+     val shortterm_window = tweets.window(Seconds(sta_win),batchInterval)
+     val joined_stream = shortterm_window.map((1,_)).join(cvalue)
+
+     /* Now detect earthquakes based on our defining equation */
+     val detections = joined_stream.filter{case (x,(y,z)) => z.toDouble < 1.0}
+	              .map{case (x,(y,z)) => (y,z)}
+
+      /* Register all tweets in the shortterm window associated with a detection as
+      a schemaRDD, which can be queried in a simple SQL-style language */
+     detections.foreachRDD(rdd_sta => {
+
+            /* Only register, in case we have detected something */
+            if (rdd_sta.count > 0) {
+
+	        /* Just register the actual tweets */
+	        val json_rdd_sta = sqlContext.jsonRDD(rdd_sta.map{case (x,y) => x})
+		json_rdd_sta.registerAsTable("twitter_json_sta")
+ 	        json_rdd_sta.printSchema()
 
 
+                /* Some sample requests on the data */
+	        val res_sta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_sta").
+	       	      	      collect().head.getLong(0)
+	       
+	        println(s"Number of tweets per minute: $res_sta") 
+          }
+        })
+      
 
-
-      // Print popular hashtags
-      topHashCounts60.foreachRDD(rdd => {
-      val topList = rdd.take(3)
-      println("\nTop 3 topics in last 60 seconds (%s total):".format(rdd.count()))
-      topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
-      })     
-
-      /*
-      topHashCounts10.foreachRDD(rdd => {
-      val topList = rdd.take(3)
-      println("\nTop 3 topics in last 10 seconds (%s total):".format(rdd.count()))
-      topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
-      })
-
-      topWordCounts60.foreachRDD(rdd => {
-      val topList = rdd.take(3)
-      println("\nTop 3 words topics in last 60 seconds (%s total):".format(rdd.count()))
-      topList.foreach{case (count, tag) => println("%s (%s tweets)".format(tag, count))}
-      })
-      */
-
-      val shortterm_window = lines.window(Seconds(60),batchInterval)
-      val longterm_window = lines.window(Seconds(3600),batchInterval)       
-
-      /* Now our processing logic starts */	
-
-      longterm_window.foreachRDD(rdd_lta => {
-           if (rdd_lta.count > 0) {
-               val json_rdd_lta = sqlContext.jsonRDD(rdd_lta)
-               json_rdd_lta.registerAsTable("twitter_json_lta")
-	       json_rdd_lta.printSchema()
-
-               // Some sample requests on the data
-	       val res_lta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_lta").collect().head.getLong(0)
-
-	       shortterm_window.foreachRDD(rdd_sta => {
-                    if (rdd_sta.count > 0) {
-		        val json_rdd_sta = sqlContext.jsonRDD(rdd_sta)
-			json_rdd_sta.registerAsTable("twitter_json_sta")
-
- 	                val res_sta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_sta").collect().head.getLong(0)
-			val C_value = res_sta/(m*res_lta+b)
-
-			println(s"C value: $C_value")
-			println(s"Number of tweets per minute: $res_sta")
-			println(s"Number of tweets per hour: $res_lta")	
-
-			/* @ TODO: ... as soon as C_value > 1 we trigger ... */
-
-                    }
-                 })
-               }
-            })
-
-     
       /* Start the streaming context and await termination */
       ssc.start()
       ssc.awaitTermination()
-
-
 
   }
 }
