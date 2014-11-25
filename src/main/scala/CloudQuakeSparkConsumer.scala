@@ -143,7 +143,7 @@ object CloudQuakeSparkConsumer {
      val joined_stream = shortterm_window.map((1,_)).join(cvalue)
 
      /* Now detect earthquakes based on our defining equation */
-     val detections = joined_stream.filter{case (x,(y,z)) => z.toDouble < 1.0}
+     val detections = joined_stream.filter{case (x,(y,z)) => z.toDouble > thres}
 	              .map{case (x,(y,z)) => (y,z)}
 
      /* Every minute save the c value and the earliest tweet in the window to S3*/
