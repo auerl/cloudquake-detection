@@ -69,22 +69,28 @@ object CloudQuakeSparkConsumer {
      /* For now use 1 Kinesis Worker/Receiver/DStream for each shard. */
      val numStreams = numShards
 
-     /* Spark Streaming batch interval */
+     /* Hardcoded parameters */
      val batchInterval = Seconds(10) // A 10 Seconds batch interval is good for testing     
-
-
      val sta_win = 60 // In seconds
      val lta_win = 180 // In seconds, 180 for testing
      val m = 4.0     
      val b = 10.0
-
-
+     val thres = 1.0
 
      /* Setup the and SparkConfig and StreamingContext */
      val sparkConfig = new SparkConf().setAppName("CloudQuakeSparkConsumer")
                                       .set("spark.cleaner.ttl","7200") // clean every 2 hours 
      val ssc = new StreamingContext(sparkConfig, batchInterval)
      val sc = new SparkContext(sparkConfig)
+
+
+     /* This we need to interact with Amazon S3 database */
+     val hadoopConf=sc.hadoopConfiguration;
+     hadoopConf.set("fs.s3.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
+     val myAccessKey = sys.env("AWS_ACCESS_KEY_ID")
+     val mySecretKey = sys.env("AWS_SECRET_KEY")
+     hadoopConf.set("fs.s3.awsAccessKeyId",myAccessKey)
+     hadoopConf.set("fs.s3.awsSecretAccessKey",mySecretKey)
 
      /* Start up a new Spark SQL context */
      val sqlContext = new org.apache.spark.sql.SQLContext(sc)	
@@ -110,7 +116,6 @@ object CloudQuakeSparkConsumer {
      def longToDouble(x:Long): Double = x.toDouble
      def doubleToString(x:Double): String = x.toString
      def modify_sta(x:Double): Double = m*x + b
-
 
      /* Compute long term average in a window of 1h*/
      val lta_num = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
@@ -141,8 +146,16 @@ object CloudQuakeSparkConsumer {
      val detections = joined_stream.filter{case (x,(y,z)) => z.toDouble < 1.0}
 	              .map{case (x,(y,z)) => (y,z)}
 
-      /* Register all tweets in the shortterm window associated with a detection as
-      a schemaRDD, which can be queried in a simple SQL-style language */
+     /* Every minute save the c value and the earliest tweet in the window to S3*/
+     joined_stream.map{case (x,(y,z)) => (y,z)}.foreachRDD(rdd_sta => {
+            /* Only register, in case we have a tweet */
+            if (rdd_sta.count > 0) {
+                rdd_sta.saveAsTextFile("s3n://cqs3bucket/quiecence/no_"+System.currentTimeMillis)
+            }
+     })
+
+     /* Register all tweets in the shortterm window associated with a detection as
+     a schemaRDD, which can be queried in a simple SQL-style language */
      detections.foreachRDD(rdd_sta => {
 
             /* Only register, in case we have detected something */
@@ -152,20 +165,22 @@ object CloudQuakeSparkConsumer {
 	        val json_rdd_sta = sqlContext.jsonRDD(rdd_sta.map{case (x,y) => x})
 		json_rdd_sta.registerAsTable("twitter_json_sta")
  	        json_rdd_sta.printSchema()
-
-
+					
                 /* Some sample requests on the data */
 	        val res_sta = sqlContext.sql("SELECT COUNT(*) FROM twitter_json_sta").
 	       	      	      collect().head.getLong(0)
-	       
+
+                rdd_sta.saveAsTextFile("s3n://cqs3bucket/dections/eq_"
+		                       +System.currentTimeMillis)
+			      
 	        println(s"Number of tweets per minute: $res_sta") 
-          }
-        })
+            }
+     })
       
 
-      /* Start the streaming context and await termination */
-      ssc.start()
-      ssc.awaitTermination()
+     /* Start the streaming context and await termination */
+     ssc.start()
+     ssc.awaitTermination()
 
   }
 }
