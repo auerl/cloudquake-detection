@@ -37,6 +37,7 @@ import com.amazonaws.services.kinesis.clientlibrary.lib.worker.InitialPositionIn
 import com.amazonaws.services.kinesis.model.PutRecordRequest
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
+import org.apache.log4j.PropertyConfigurator
 import java.lang.Math
 
 object CloudQuakeSparkConsumer {
@@ -54,6 +55,9 @@ object CloudQuakeSparkConsumer {
 	   System.exit(1) 
      }
 
+     /* Configure output verbosity */
+     PropertyConfigurator.configure("./log4j.properties")
+
 
      /* Populate the appropriate variables from the given args */
      val Array(streamName, endpointUrl) = args
@@ -70,9 +74,9 @@ object CloudQuakeSparkConsumer {
      val numStreams = numShards
 
      /* Hardcoded parameters */
-     val batchInterval = Seconds(10) // A 10 Seconds batch interval is good for testing     
+     val batchInterval = Seconds(60) // A 10 Seconds batch interval is good for testing     
      val sta_win = 60 // In seconds
-     val lta_win = 180 // In seconds, 180 for testing
+     val lta_win = 3600 // In seconds, 180 for testing
      val m = 4.0     
      val b = 10.0
      val thres = 1.0
@@ -127,6 +131,11 @@ object CloudQuakeSparkConsumer {
                                         .countByWindow(Seconds(sta_win),batchInterval)
 					.map(longToDouble).map(modify_sta)
 
+     /* Compute short term average, including m and b values (see ... et al. 2011) */
+     val sta_num_raw = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
+                                        .countByWindow(Seconds(sta_win),batchInterval)
+					.map(longToDouble)
+
      /* Prelinary union lta and sta streams */
      val sta_and_lta = sta_num.transformWith(lta_num, (rdd1: RDD[Double], 
           	  rdd2: RDD[Double]) => rdd1.union(rdd2))
@@ -141,6 +150,9 @@ object CloudQuakeSparkConsumer {
      /* for storage I want a shortterm window in key-value pair form */
      val shortterm_window = tweets.window(Seconds(sta_win),batchInterval)
      val joined_stream = shortterm_window.map((1,_)).join(cvalue)
+     val joined_stream_raw = sta_num_raw.map((1,_)).join(lta_num.map((1,_)))
+
+
 
      /* Now detect earthquakes based on our defining equation */
      val detections = joined_stream.filter{case (x,(y,z)) => z.toDouble > thres}
@@ -150,7 +162,15 @@ object CloudQuakeSparkConsumer {
      joined_stream.map{case (x,(y,z)) => (y,z)}.foreachRDD(rdd_sta => {
             /* Only register, in case we have a tweet */
             if (rdd_sta.count > 0) {
-                rdd_sta.saveAsTextFile("s3n://cqs3bucket/quiecence/no_"+System.currentTimeMillis)
+                rdd_sta.saveAsTextFile("s3n://cqs3bucket/quiecence2/no_"+System.currentTimeMillis)
+            }
+     })
+
+     /* Every minute save the c value and the earliest tweet in the window to S3*/
+     joined_stream_raw.map{case (x,(y,z)) => (y,z)}.foreachRDD(rdd_sta => {
+            /* Only register, in case we have a tweet */
+            if (rdd_sta.count > 0) {
+                rdd_sta.saveAsTextFile("s3n://cqs3bucket/quiecence2_raw/no_"+System.currentTimeMillis)
             }
      })
 
