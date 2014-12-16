@@ -1,7 +1,5 @@
-cloudquake-spark
-================
+cloudquake-detection
+====================
 
-This README.md describes how to set up an Amazon EC2 instance
-with Apache Spark and running an example of the cloudquake-spark-
-consumer.
+Simple earthquake detection algorithm based on Earle et al. (2012)
 
