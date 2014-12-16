@@ -92,7 +92,7 @@ object CloudQuakeSparkConsumer {
      val hadoopConf=sc.hadoopConfiguration;
      hadoopConf.set("fs.s3.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
      val myAccessKey = sys.env("AWS_ACCESS_KEY_ID")
-     val mySecretKey = sys.env("AWS_SECRET_KEY")
+     val mySecretKey = sys.env("AWS_SECRET_ACCESS_KEY")
      hadoopConf.set("fs.s3.awsAccessKeyId",myAccessKey)
      hadoopConf.set("fs.s3.awsSecretAccessKey",mySecretKey)
 
@@ -119,7 +119,7 @@ object CloudQuakeSparkConsumer {
      def square(x:Double): Double = x*x 
      def longToDouble(x:Long): Double = x.toDouble
      def doubleToString(x:Double): String = x.toString
-     def modify_sta(x:Double): Double = m*x + b
+     def modify_lta(x:Double): Double = m*(x/60) + b
 
      /* Compute long term average in a window of 1h*/
      val lta_num = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
@@ -129,7 +129,7 @@ object CloudQuakeSparkConsumer {
      /* Compute short term average, including m and b values (see ... et al. 2011) */
      val sta_num = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
                                         .countByWindow(Seconds(sta_win),batchInterval)
-					.map(longToDouble).map(modify_sta)
+					.map(longToDouble).map(modify_lta)
 
      /* Compute short term average, including m and b values (see ... et al. 2011) */
      val sta_num_raw = unionStreams.flatMap(byteArray => new String(byteArray).split("\n"))
@@ -141,7 +141,7 @@ object CloudQuakeSparkConsumer {
           	  rdd2: RDD[Double]) => rdd1.union(rdd2))
 
      /* I need it in key-value pair format for joining with the actual tweets later */
-     val cvalue = sta_and_lta.reduce((res_sta, res_lta) => res_lta / res_sta )
+     val cvalue = sta_and_lta.reduce((res_sta, res_lta) => res_sta / res_lta )
                    .map(doubleToString).map((1,_))  
 
      /* Print current cvalue */
